@@ -1,0 +1,66 @@
+* This code fragment is from my attempt to calculate the expected FF rate for the 
+* meeting AFTER next. I wrote this based on my thinking (hopefully correct) that 
+* it sufficed to define two "subcases" of cases 2 and 5, reflecting the timing of 
+* the meetings at the four-month horizon. The other scenarios can (I think) be handled
+* with the existing taxonomy of cases.
+
+set newmonth = %month(t) <> %month(t-1)
+
+* Define the variables needed to calculate the expected policy rate:
+*    -> days2mtg = number of days until the next meeting, day of meeting = 0
+*    -> nexttarg = the target rate set at the next meeting
+*    -> mtgmox = 1 for months with an FOMC meeting, equal to 1 on the pre-meeting days
+*    -> nonmmtg = 1 for months with no FOMC meeting the *following* month ("NO Next Month MTG")
+*    -> nomanmtg = 1 for months with no meeting the month after next ("NO Month After Next MTG")
+*    -> scalefact = days in month / # of post-FOMC days + 1, "carried back" to previous month's post-meeting days
+*    -> mtgmonth = 1 for months with an FOMC meeting
+
+* loop backwards, since we need to see ex post whether there was a meeting
+
+do s=2017:05:03,1989:06:01,-1
+   set days2mtg   s s = %if((fomcdate(s)==1),0,(days2mtg(s+1)+1))
+   set nexttarg   s s = %if((fomcdate(s)==1),dfedtar,nexttarg(s+1))
+   set mtgmox     s s = %if((fomcdate(s)==1),1,  %if(newmonth(s+1)==1,0,mtgmox(s+1) ) )
+   set noNMmtg    s s = %if((newmonth(s+1)==1),(.not. mtgmox(s+1)),nonmmtg(s+1))
+   set noMANmtg   s s = %if((newmonth(s+1)==1),noNMmtg(s+1),noMANmtg(s+1))
+   set no3mtg     s s = %if((newmonth(s+1)==1),noMANmtg(s+1),no3mtg(s+1))
+   set scalefact  s s = %if((fomcdate(s)==1),(days(%month(s))/(days(%month(s))-%day(s)+1)),scalefact(s+1))
+   set scalefact2 s s = %if((fomcdate(s)==1),scalefact(s+1),scalefact2(s+1))
+end do s
+
+set mtgmonth  1989:06:01 2017:05:31 = %if((newmonth==1),mtgmox(t),mtgmonth(t-1))
+
+set type5a = type5 .and. no3mtg           ;* off/on/on/off
+set type5b = type5 .and. (.not. no3mtg)   ;* off/on/on/on
+set type2a = type2 .and. no3mtg           ;* on/off/on/off
+set type2b = type2 .and. (.not. no3mtg)   ;* on/off/on/off
+
+* HUGE KLUDGE HERE because I didn't have FFF4 in the dataset I was working from, although
+* I think I do have the data somewhere.
+* Another issue: large "scale factors" when the meeting occurs near the end of the
+* month. In these cases, we should use the FF futures contract from the following month,
+* if there's no meeting.
+* For the time being, set affected observations to %NA, just to create a 
+* rough picture.
+
+set exptarg2 = type1*( %if((mtgmox==1), fff2, (dfedtar(t-1)+scalefact2*(fff3-dfedtar(t-1)))   ) ) $
+             + type2a*( %if((mtgmox==1), (dfedtar(t-1)+scalefact2*(fff2-dfedtar(t-1))),(dfedtar(t-1)+scalefact2*(fff3-dfedtar(t-1))) ) ) $
+             + type2b*( %if((mtgmox==1), (dfedtar(t-1)+scalefact2*(fff2-dfedtar(t-1))),(dfedtar(t-1)+scalefact2*(fff3-dfedtar(t-1))) ) ) $
+             + type3*( dfedtar(t)+scalefact2*(fff3-dfedtar(t)) )  $
+             + type4*( %if((mtgmox==1), (dfedtar(t-1)+scalefact2*(fff1-dfedtar(t-1))), fff3 ) ) $
+             + type5a*( fff3 ) $
+             + type5b*( dfedtar(t-1)+scalefact2*(fff2-dfedtar(t-1)))
+
+set exptarg2 = %if(type2a,%na,exptarg2)              ;* Case "2a" might not be correct
+set exptarg2 = %if( (scalefact2>3.0),%na,exptarg2 )  ;* big scale factor
+set exptarg2 = %if( newmonth,%na,exptarg2 )          ;* some glitches changing months
+set exptarg2 1994:09:28 1994:09:30 = %na             ;* weird stuff here
+
+print(dates) 1994:09:15 1995:01:31  mtgmox type2b dfedtar scalefact2 exptarg2 fff2 fff3
+
+graph(shading=type2) 3
+# dfedtar 1989:01:01 2007:06:30
+# exptarget 1989:01:01 2007:06:30
+# exptarg2 1989:01:01 2007:06:30
+
+set exprev2 = 100*( exptarg2(t) - %if(%valid(exptarg2(t-1)),exptarg2(t-1),exptarg2(t-2)) )
